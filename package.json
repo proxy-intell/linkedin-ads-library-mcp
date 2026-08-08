@@ -1,0 +1,46 @@
+{
+  "name": "@proxy-intell/linkedin-ads-library-mcp",
+  "version": "1.0.0",
+  "description": "The most visual MCP server for the LinkedIn Ad Library. Search any advertiser and your AI shows you actual ad creatives in-context.",
+  "main": "index.js",
+  "bin": {
+    "linkedin-ads-library-mcp": "./index.js"
+  },
+  "scripts": {
+    "start": "node index.js",
+    "postinstall": "node install-deps.js"
+  },
+  "keywords": [
+    "mcp",
+    "mcp-server",
+    "linkedin-ads-library-mcp",
+    "linkedin",
+    "ads",
+    "ad-library",
+    "marketing",
+    "competitive-intelligence"
+  ],
+  "author": "Proxy <hello@useproxy.dev>",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/proxy-intell/linkedin-ads-library-mcp.git"
+  },
+  "homepage": "https://useproxy.dev",
+  "bugs": {
+    "url": "https://github.com/proxy-intell/linkedin-ads-library-mcp/issues"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "files": [
+    "index.js",
+    "install-deps.js",
+    "mcp_server.py",
+    "requirements.txt",
+    "src/",
+    "assets/",
+    "readme.md",
+    "LICENSE"
+  ]
+}
