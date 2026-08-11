@@ -42,5 +42,6 @@
     "assets/",
     "readme.md",
     "LICENSE"
-  ]
+  ],
+  "mcpName": "io.github.proxy-intell/linkedin-ads-library"
 }
