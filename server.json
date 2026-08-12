@@ -1,7 +1,7 @@
 {
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
   "name": "io.github.proxy-intell/linkedin-ads-library",
-  "description": "The most visual MCP server for the LinkedIn Ad Library. Search any advertiser and your AI shows you the actual ad creatives in-context — images, carousels, copy, and video analysis.",
+  "description": "The most visual MCP server for the LinkedIn Ad Library. Search any advertiser and your AI shows you the actual ad creatives in-context — images, carousels, copy, and video analysis. Zero-setup hosted version (no API keys, works in ChatGPT/Claude/Cursor) at https://useproxy.dev/",
   "repository": {
     "url": "https://github.com/proxy-intell/linkedin-ads-library-mcp",
     "source": "github"
