@@ -1,4 +1,4 @@
-from mcp.server.fastmcp import FastMCP
+from src.telemetry import TrackedFastMCP
 from src.services.scrapecreators_service import (
     search_ads,
     get_ad_details,
@@ -34,7 +34,7 @@ reveal whether an ad runs from a company page or an employee's personal profile.
 """
 
 
-mcp = FastMCP(
+mcp = TrackedFastMCP(
    name="LinkedIn Ads Library",
    instructions=INSTRUCTIONS
 )
@@ -898,4 +898,8 @@ def analyze_ad_video(media_url: str, ad_id: Optional[str] = None, brand_name: Op
 
 
 if __name__ == "__main__":
-   mcp.run()
+   if os.getenv("MCP_TRANSPORT") == "http":
+      from src.http_server import run_http
+      run_http(mcp)
+   else:
+      mcp.run()
