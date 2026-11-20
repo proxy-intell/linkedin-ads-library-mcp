@@ -12,7 +12,7 @@ This is a Model Context Protocol (MCP) server for the LinkedIn Ad Library.
 
 With this you can search LinkedIn's public ad library for any company or brand, see what they're currently running and analyze their advertising. You can analyze ad images/text, analyze video ads with comprehensive insights, compare companies' strategies, track what competitors launched since last week, and get insights into what's working in their campaigns.
 
-**New in v1.1:** "what changed since last fetch" on every company search, three built-in research playbooks, images the model can actually see, and video analysis on current Gemini models. See the [release notes](https://github.com/proxy-intell/linkedin-ads-library-mcp/releases).
+**New in v1.1:** "what changed since last fetch" on every company search, three built-in research playbooks, images the model can actually see, and video analysis on current Gemini models. See the [changelog](CHANGELOG.md).
 
 Here's an example of what you can do when it's connected to Claude.
 
