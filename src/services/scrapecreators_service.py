@@ -1,6 +1,7 @@
 import requests
 import sys
 import os
+import time
 import logging
 import re
 from typing import Dict, Any, List, Optional
@@ -116,12 +117,20 @@ def _request(url: str, params: Dict[str, Any]) -> Dict[str, Any]:
     """Issue an authenticated GET against the ScrapeCreators API and return parsed JSON."""
     api_key = get_scrapecreators_api_key()
 
-    response = requests.get(
-        url,
-        headers={"x-api-key": api_key},
-        params=params,
-        timeout=30
-    )
+    # One retry on a 5xx or dropped connection, then raise.
+    for attempt in range(2):
+        try:
+            response = requests.get(url, headers={"x-api-key": api_key}, params=params, timeout=30)
+        except requests.ConnectionError:
+            if attempt:
+                raise
+            time.sleep(2)
+            continue
+        if response.status_code >= 500 and not attempt:
+            logger.warning(f"ScrapeCreators returned {response.status_code}, retrying once")
+            time.sleep(2)
+            continue
+        break
     check_credit_status(response)
     response.raise_for_status()
 
@@ -212,7 +221,18 @@ def search_ads(
         if pagination_token:
             params["paginationToken"] = pagination_token
 
-        content = _request(SEARCH_API_URL, params)
+        try:
+            content = _request(SEARCH_API_URL, params)
+        except (CreditExhaustedException, RateLimitException):
+            raise
+        except Exception as e:
+            # An error on the first page is a failed lookup, not "no ads": let the caller report it.
+            # Later pages keep what was already collected; the token lets the caller resume.
+            if pages == 0:
+                raise
+            logger.warning(f"Stopped paging LinkedIn ads after {pages} page(s): {e}")
+            is_last_page = False
+            break
         pages += 1
 
         total_ads = content.get('totalAds', total_ads)

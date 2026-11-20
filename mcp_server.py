@@ -1,3 +1,8 @@
+from dotenv import load_dotenv
+
+# Load .env before the services read their settings (GEMINI_MODEL, API keys).
+load_dotenv()
+
 from src.telemetry import TrackedFastMCP
 from src.services.scrapecreators_service import (
     search_ads,
@@ -6,15 +11,14 @@ from src.services.scrapecreators_service import (
     get_scrapecreators_api_key,
 )
 from src.services.media_cache_service import media_cache, image_cache  # Keep image_cache for backward compatibility
-from src.services.gemini_service import configure_gemini, upload_video_to_gemini, analyze_video_with_gemini, cleanup_gemini_file
+from src.services.gemini_service import GEMINI_MODEL, configure_gemini, upload_video_to_gemini, analyze_video_with_gemini, cleanup_gemini_file
+from src import ad_history
+from src.playbooks import PLAYBOOKS, TRIGGERS
+from mcp.server.fastmcp import Image
 from typing import Dict, Any, List, Optional
+import json
 import requests
-import base64
 import os
-from dotenv import load_dotenv
-
-# Load environment variables from .env file
-load_dotenv()
 
 
 INSTRUCTIONS = """
@@ -28,9 +32,73 @@ Workflow:
    (language, location, audience) and per-country impression data
 3. Use analyze_ad_image/analyze_ad_video for comprehensive media analysis
 
+Re-running search_linkedin_ads for the same company 24h+ later reports which ads are new and
+how many dropped out since the last fetch. For a research job (competitor teardown, prospect
+lists, weekly competitor tracking) call get_playbook first and follow it.
+
 LinkedIn ads carry B2B-specific signal the other ad libraries don't: the targeting
 block describes the audience the advertiser selected, and posterTitle/promotedBy
 reveal whether an ad runs from a company page or an employee's personal profile.
+"""
+
+
+IMAGE_ANALYSIS_PROMPT = """
+Analyze this LinkedIn ad image and extract ALL factual information about:
+
+**Overall Visual Description:**
+- Complete description of what is shown in the image
+
+**Text Elements:**
+- Identify and transcribe ALL text present in the image
+- Categorize each text element as:
+  * "Headline Hook" (designed to grab attention)
+  * "Value Proposition" (explains the benefit to the viewer)
+  * "Call to Action (CTA)" (tells the viewer what to do next)
+  * "Social Proof" (customer logos, stats, testimonials, analyst quotes)
+  * "Disclaimer" (legal text, terms, conditions)
+  * "Brand Name" (company or product names)
+  * "Other" (any other text)
+
+**People Description:**
+- For each person visible: age range, gender, appearance, clothing, pose, facial expression, setting
+- Whether they read as executives, practitioners, customers, or stock photography
+
+**Brand Elements:**
+- Logos present (describe and position), including any co-marketing or customer logos
+- Product shots and UI screenshots (describe what is shown)
+- Brand colors or visual identity elements
+
+**Composition & Layout:**
+- Layout structure (grid, asymmetrical, centered, etc.)
+- Visual hierarchy (what draws attention first, second, third)
+- Element positioning (top-left, center, bottom-right, etc.)
+- Aspect ratio and whether it suits the LinkedIn feed
+- Use of composition techniques (rule of thirds, leading lines, symmetry, etc.)
+
+**Colors & Visual Style:**
+- List ALL dominant colors (specific color names or hex codes if possible)
+- Background color/type and style
+- Style register (corporate photography, flat illustration, data-viz, screenshot, meme-style, etc.)
+- Any filters, effects, or styling applied
+
+**B2B Offer Signals:**
+- What is actually being offered (demo, webinar, report/whitepaper, free trial, event, job posting)
+- Funnel stage the creative implies (awareness, consideration, conversion)
+- Seniority and function the creative appears aimed at (e.g. IT decision-makers, HR leaders, developers)
+- Any gating cues (form fill, "download", "register")
+
+**Technical & Target Audience Indicators:**
+- Text readability and contrast
+- Overall image quality
+- Visual cues about target audience (industry, company size, role, seniority)
+- Setting/environment details
+
+**Message & Theme:**
+- What story or message the visual conveys
+- Emotional tone and mood
+- Marketing strategy indicators
+
+Extract ALL this information comprehensively. The presentation format (summary vs detailed breakdown) will be determined based on the user's specific request context.
 """
 
 
@@ -43,7 +111,7 @@ AD_LIBRARY_URL = "https://www.linkedin.com/ad-library/home"
 
 
 @mcp.tool(
-  description="Search LinkedIn's Ad Library for the ads a company is running. Search by company name, by keyword across ad copy, or by LinkedIn company ID (most precise). Supports country and date-range filters. Returns headline, description, CTA, destination URL, targeting, impressions and media URLs. For complete analysis of visual elements, colors, design, or creative content, you MUST also use analyze_ad_image or analyze_ad_video on the media returned by each ad.",
+  description="Search LinkedIn's Ad Library for the ads a company is running. Search by company name, by keyword across ad copy, or by LinkedIn company ID (most precise). Supports country and date-range filters. Returns headline, description, CTA, destination URL, targeting, impressions and media URLs. Company searches also return a changes block: ads launched in the last 7 days and, when the same company was fetched with the same filters 24h+ ago, which ads are new since then and how many dropped out. For complete analysis of visual elements, colors, design, or creative content, you MUST also use analyze_ad_image or analyze_ad_video on the media returned by each ad.",
   annotations={
     "title": "Search LinkedIn Ads",
     "readOnlyHint": True,
@@ -112,6 +180,11 @@ def search_linkedin_ads(
         )
         ads = result.get('ads', [])
         criterion = company or company_id or keyword
+        # Track company searches only: keyword results aren't one advertiser's ad set, and a
+        # continuation page is a slice, not the whole set.
+        changes = None
+        if (company or company_id) and not pagination_token:
+            changes = ad_history.changes(f"linkedin:{company_id or company}:{keyword}:{countries}:{start_date}:{end_date}:{limit}", ads)
 
         if not ads:
             return {
@@ -123,6 +196,7 @@ def search_linkedin_ads(
                 "ads": [],
                 "pagination_token": None,
                 "is_last_page": True,
+                "changes": changes,
                 "error": None
             }
 
@@ -133,6 +207,7 @@ def search_linkedin_ads(
             "pagination_token": result.get('pagination_token'),
             "is_last_page": result.get('is_last_page', False),
             "total_ads": result.get('total_ads'),
+            "changes": changes,
             "ad_library_url": AD_LIBRARY_URL,
             "source_citation": f"[LinkedIn Ad Library - {criterion}]({AD_LIBRARY_URL})",
             "error": None
@@ -245,205 +320,61 @@ def get_linkedin_ad_details(ad_id: str) -> Dict[str, Any]:
 
 
 @mcp.tool(
-  description="REQUIRED for analyzing images from LinkedIn ads. Download and analyze ad images (single image creatives, carousel cards and document/thumbnail covers) to extract visual elements, text content, colors, people, brand elements, and composition details. This tool should be used for EVERY image URL returned by search_linkedin_ads when doing comprehensive analysis. Uses intelligent caching so multiple image analysis calls are efficient and cost-free.",
+  description="Analyze a LinkedIn ad image (single image creatives, carousel cards, document/thumbnail covers): returns the image itself so you can see it, plus a checklist (text, offer, people, brand elements, composition, B2B signals). Pass one image URL from search_linkedin_ads or get_linkedin_ad_details. Downloads are cached locally.",
   annotations={
     "title": "Analyze Ad Image Content",
     "readOnlyHint": True,
     "openWorldHint": True
   }
 )
-def analyze_ad_image(media_url: str, brand_name: Optional[str] = None, ad_id: Optional[str] = None) -> Dict[str, Any]:
-    """Download LinkedIn ad images and prepare them for visual analysis by the MCP client.
+def analyze_ad_image(media_url: str, brand_name: Optional[str] = None, ad_id: Optional[str] = None) -> Any:
+    """Download a LinkedIn ad image and hand it to the model for visual analysis.
 
-    This tool downloads images from LinkedIn CDN URLs and provides them in a format
-    that Claude can analyze using its vision capabilities. Images are cached locally
-    to avoid re-downloading. The tool provides detailed analysis instructions to ensure
-    comprehensive, objective visual analysis.
+    The image comes back as an image content block, so the model sees it with its own vision,
+    plus a checklist of what to extract. Downloads are cached locally.
 
     Args:
-        media_url: The direct URL to the LinkedIn ad image (image or carouselImages entry).
+        media_url: An image URL (image_urls entry) from search_linkedin_ads or get_linkedin_ad_details.
         brand_name: Optional brand name for cache organization.
-        ad_id: Optional ad ID for tracking purposes.
-
-    Returns:
-        A dictionary containing:
-        - success: Boolean indicating if download was successful
-        - message: Status message
-        - cached: Boolean indicating if image was retrieved from cache
-        - image_data: Base64 encoded image data for vision analysis
-        - media_url: Original image URL
-        - analysis_instructions: Detailed prompt for objective visual analysis
-        - cache_status: Information about cache usage
-        - error: Error details if download failed
+        ad_id: Optional ad ID, used for the ad library link.
     """
     if not media_url or not media_url.strip():
-        return {
-            "success": False,
-            "message": "Media URL must be provided and cannot be empty.",
-            "cached": False,
-            "analysis": {},
-            "cache_info": {},
-            "error": "Missing or empty media URL"
-        }
-
+        return {"success": False, "message": "media_url must be provided and cannot be empty.", "error": "Missing media URL"}
+    media_url = media_url.strip()
     try:
-        # Check cache first
-        cached_data = image_cache.get_cached_image(media_url.strip())
-
-        if cached_data and cached_data.get('analysis_results'):
-            # Return cached analysis results
-            return {
-                "success": True,
-                "message": f"Retrieved cached analysis for {media_url}",
-                "cached": True,
-                "analysis": cached_data['analysis_results'],
-                "cache_info": {
-                    "cached_at": cached_data.get('downloaded_at'),
-                    "analysis_cached_at": cached_data.get('analysis_cached_at'),
-                    "file_size": cached_data.get('file_size'),
-                    "brand_name": cached_data.get('brand_name'),
-                    "ad_id": cached_data.get('ad_id')
-                },
-                "error": None
-            }
-
-        # Determine if we need to download
-        image_data = None
-
-        if cached_data:
-            # Image is cached but no analysis results yet
+        cached = image_cache.get_cached_image(media_url)
+        image_bytes, content_type = None, None
+        if cached:
             try:
-                with open(cached_data['file_path'], 'rb') as f:
+                with open(cached['file_path'], 'rb') as f:
                     image_bytes = f.read()
-                image_data = base64.b64encode(image_bytes).decode('utf-8')
-            except Exception:
-                # Cache file corrupted, will re-download
-                cached_data = None
-
-        if not cached_data:
-            # Download the image
-            response = requests.get(media_url.strip(), timeout=30)
+                content_type = cached['content_type']
+            except OSError:
+                cached = None  # cache file gone, download again
+        if not cached:
+            response = requests.get(media_url, timeout=30)
             response.raise_for_status()
-
-            # Check if it's an image
             content_type = response.headers.get('content-type', '').lower()
-            if not any(img_type in content_type for img_type in ['image/', 'jpeg', 'jpg', 'png', 'gif', 'webp']):
-                return {
-                    "success": False,
-                    "message": f"URL does not point to a valid image. Content type: {content_type}",
-                    "cached": False,
-                    "analysis": {},
-                    "cache_info": {},
-                    "error": f"Invalid content type: {content_type}"
-                }
+            if not content_type.startswith('image/'):
+                return {"success": False, "message": f"URL does not point to an image (content type: {content_type}). LinkedIn media URLs expire; re-fetch the ad for a fresh one.", "error": f"Invalid content type: {content_type}"}
+            image_cache.cache_image(url=media_url, image_data=response.content, content_type=content_type, brand_name=brand_name, ad_id=ad_id)
+            image_bytes = response.content
 
-            # Cache the downloaded image
-            image_cache.cache_image(
-                url=media_url.strip(),
-                image_data=response.content,
-                content_type=content_type,
-                brand_name=brand_name,
-                ad_id=ad_id
-            )
-
-            # Encode for analysis
-            image_data = base64.b64encode(response.content).decode('utf-8')
-
-        # Construct comprehensive analysis prompt - let the client control presentation
-        analysis_prompt = """
-Analyze this LinkedIn ad image and extract ALL factual information about:
-
-**Overall Visual Description:**
-- Complete description of what is shown in the image
-
-**Text Elements:**
-- Identify and transcribe ALL text present in the image
-- Categorize each text element as:
-  * "Headline Hook" (designed to grab attention)
-  * "Value Proposition" (explains the benefit to the viewer)
-  * "Call to Action (CTA)" (tells the viewer what to do next)
-  * "Social Proof" (customer logos, stats, testimonials, analyst quotes)
-  * "Disclaimer" (legal text, terms, conditions)
-  * "Brand Name" (company or product names)
-  * "Other" (any other text)
-
-**People Description:**
-- For each person visible: age range, gender, appearance, clothing, pose, facial expression, setting
-- Whether they read as executives, practitioners, customers, or stock photography
-
-**Brand Elements:**
-- Logos present (describe and position), including any co-marketing or customer logos
-- Product shots and UI screenshots (describe what is shown)
-- Brand colors or visual identity elements
-
-**Composition & Layout:**
-- Layout structure (grid, asymmetrical, centered, etc.)
-- Visual hierarchy (what draws attention first, second, third)
-- Element positioning (top-left, center, bottom-right, etc.)
-- Aspect ratio and whether it suits the LinkedIn feed
-- Use of composition techniques (rule of thirds, leading lines, symmetry, etc.)
-
-**Colors & Visual Style:**
-- List ALL dominant colors (specific color names or hex codes if possible)
-- Background color/type and style
-- Style register (corporate photography, flat illustration, data-viz, screenshot, meme-style, etc.)
-- Any filters, effects, or styling applied
-
-**B2B Offer Signals:**
-- What is actually being offered (demo, webinar, report/whitepaper, free trial, event, job posting)
-- Funnel stage the creative implies (awareness, consideration, conversion)
-- Seniority and function the creative appears aimed at (e.g. IT decision-makers, HR leaders, developers)
-- Any gating cues (form fill, "download", "register")
-
-**Technical & Target Audience Indicators:**
-- Text readability and contrast
-- Overall image quality
-- Visual cues about target audience (industry, company size, role, seniority)
-- Setting/environment details
-
-**Message & Theme:**
-- What story or message the visual conveys
-- Emotional tone and mood
-- Marketing strategy indicators
-
-Extract ALL this information comprehensively. The presentation format (summary vs detailed breakdown) will be determined based on the user's specific request context.
-"""
-
-        result = {
+        info = {
             "success": True,
-            "message": "Image downloaded and ready for analysis.",
-            "cached": bool(cached_data),
-            "image_data": image_data,
             "media_url": media_url,
             "brand_name": brand_name,
             "ad_id": ad_id,
-            "analysis_instructions": analysis_prompt,
-            "ad_library_url": AD_LIBRARY_URL,
-            "source_citation": f"[LinkedIn Ad Library - {brand_name if brand_name else 'Ad'} #{ad_id if ad_id else 'Unknown'}]({media_url})",
-            "cache_status": "Used cached image" if cached_data else "Downloaded and cached new image",
-            "error": None
+            "ad_detail_url": f"https://www.linkedin.com/ad-library/detail/{ad_id}" if ad_id else AD_LIBRARY_URL,
+            "cache_status": "Used cached image" if cached else "Downloaded and cached new image",
+            "analysis_instructions": IMAGE_ANALYSIS_PROMPT,
         }
-
-        return result
-
+        fmt = content_type.split('/')[-1].split(';')[0].replace('jpg', 'jpeg')
+        return [json.dumps(info), Image(data=image_bytes, format=fmt)]
     except requests.exceptions.RequestException as e:
-        return {
-            "success": False,
-            "message": f"Failed to download image from {media_url}: {str(e)}",
-            "cached": False,
-            "analysis": {},
-            "cache_info": {},
-            "error": f"Network error: {str(e)}"
-        }
+        return {"success": False, "message": f"Failed to download image from {media_url}: {str(e)}. LinkedIn media URLs expire; re-fetch the ad for a fresh one.", "error": f"Network error: {str(e)}"}
     except Exception as e:
-        return {
-            "success": False,
-            "message": f"Failed to process image from {media_url}: {str(e)}",
-            "cached": False,
-            "analysis": {},
-            "cache_info": {},
-            "error": str(e)
-        }
+        return {"success": False, "message": f"Failed to process image from {media_url}: {str(e)}", "error": str(e)}
 
 
 @mcp.tool(
@@ -844,7 +775,7 @@ def analyze_ad_video(media_url: str, ad_id: Optional[str] = None, brand_name: Op
 
         analysis_results = {
             "raw_analysis": analysis_text,
-            "model_used": os.getenv("GEMINI_MODEL", "gemini-2.0-flash-exp"),
+            "model_used": GEMINI_MODEL,
             "video_metadata": {
                 "file_size_mb": round(file_size / (1024 * 1024), 2) if file_size else None,
                 "duration_seconds": duration_seconds,
@@ -895,6 +826,33 @@ def analyze_ad_video(media_url: str, ad_id: Optional[str] = None, brand_name: Op
                 cleanup_gemini_file(configure_gemini(), gemini_file.name)
             except Exception:
                 pass
+
+
+@mcp.tool(
+  description="Load a playbook: the step-by-step method for an ad research job (which tool calls, what to look for, output format). Call it BEFORE starting when the request matches a job, then follow it. Jobs:\n" + "\n".join(f"- {job}: {trigger}" for job, trigger in TRIGGERS.items()),
+  annotations={
+    "title": "Get Analysis Playbook",
+    "readOnlyHint": True,
+    "openWorldHint": False
+  }
+)
+def get_playbook(job: str) -> str:
+    """Return the playbook text for a job: competitor_teardown, who_is_advertising, competitor_watch."""
+    key = job.strip().lower().replace(" ", "_").replace("-", "_")
+    if key not in PLAYBOOKS:
+        return f"Unknown job '{job}'. Valid jobs: {', '.join(PLAYBOOKS)}."
+    return PLAYBOOKS[key]
+
+
+def _playbook_prompt(job: str):
+    def prompt(brief: str = "") -> str:
+        return f"Run this playbook.{f' My brief: {brief}' if brief else ''}\n\n{PLAYBOOKS[job]}"
+    return prompt
+
+
+# The same playbooks in the host's prompt menu (Claude Desktop, Claude Code, Cursor).
+for _job, _trigger in TRIGGERS.items():
+    mcp.prompt(name=_job, title=_job.replace("_", " ").capitalize(), description=f"Playbook for {_trigger}.")(_playbook_prompt(_job))
 
 
 if __name__ == "__main__":
