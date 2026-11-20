@@ -10,7 +10,9 @@
 
 This is a Model Context Protocol (MCP) server for the LinkedIn Ad Library.
 
-With this you can search LinkedIn's public ad library for any company or brand, see what they're currently running and analyze their advertising. You can analyze ad images/text, analyze video ads with comprehensive insights, compare companies' strategies, and get insights into what's working in their campaigns.
+With this you can search LinkedIn's public ad library for any company or brand, see what they're currently running and analyze their advertising. You can analyze ad images/text, analyze video ads with comprehensive insights, compare companies' strategies, track what competitors launched since last week, and get insights into what's working in their campaigns.
+
+**New in v1.1:** "what changed since last fetch" on every company search, three built-in research playbooks, images the model can actually see, and video analysis on current Gemini models. See the [release notes](https://github.com/proxy-intell/linkedin-ads-library-mcp/releases).
 
 Here's an example of what you can do when it's connected to Claude.
 
@@ -38,6 +40,8 @@ Prefer to run it yourself? The full self-host setup is documented below.
 | Ad libraries | Meta, Google, LinkedIn and TikTok (EU) in one server | LinkedIn only |
 | Cost | Free for 20 credits a day; paid plans for more | ScrapeCreators credits (about $1.88 per 1,000 calls) plus Gemini usage for video |
 | API keys | None, sign in with OAuth | ScrapeCreators, plus Gemini for video |
+| What changed since last fetch | ✅ | ✅ |
+| Research playbooks (teardowns, prospect lists, weekly watch) | ✅ | ✅ |
 | Competitor discovery and competitive brief | ✅ | ❌ |
 | Inline ad carousel | ✅ | ❌ |
 | ChatGPT and claude.ai | ✅ (ChatGPT app and Claude connector) | ❌ (they need a public OAuth server) |
@@ -65,6 +69,18 @@ Find LinkedIn ads mentioning 'AI agents' and tell me which offers they're pushin
 
 ```plaintext
 Do a deep comparison of the messaging between 'HubSpot' and 'Salesforce' on LinkedIn. Give it a nice forwardable summary.
+```
+
+```plaintext
+Pull Snowflake's and Databricks' LinkedIn ads. I'll ask again next week: tell me what's new then.
+```
+
+### Playbooks
+
+Your MCP client's prompt menu now lists three playbooks: `competitor_teardown`, `who_is_advertising` and `competitor_watch`. Or just ask, and the model loads the right one with `get_playbook`:
+
+```plaintext
+Which of these 10 SaaS companies run LinkedIn ads, and what would I open a sales email with for each?
 ```
 
 ---
@@ -238,10 +254,11 @@ This MCP server provides tools for interacting with LinkedIn Ad Library objects:
 
 | Tool Name                  | Description                                                                                       |
 | -------------------------- | ------------------------------------------------------------------------------------------------- |
-| `search_linkedin_ads`      | Searches the LinkedIn Ad Library by company, keyword or company ID, with country and date filters   |
+| `search_linkedin_ads`      | Searches the LinkedIn Ad Library by company, keyword or company ID; company searches report what changed since the last fetch |
 | `get_linkedin_ad_details`  | Gets full detail for a specific ad — targeting, per-country impressions, creative and destination   |
-| `analyze_ad_image`         | Downloads and analyzes ad images for visual elements, text, colors, and composition                 |
-| `analyze_ad_video`         | Downloads and analyzes ad videos using Gemini AI for comprehensive video insights                   |
+| `analyze_ad_image`         | Returns the ad image to the model for visual analysis                                               |
+| `analyze_ad_video`         | Analyzes an ad video with Gemini (set `GEMINI_MODEL` to change the model)                           |
+| `get_playbook`             | **NEW** - Step-by-step method for a research job (also served as prompts)                           |
 | `get_cache_stats`          | Gets statistics about cached media (images and videos) and storage usage                            |
 | `search_cached_media`      | Searches previously analyzed media by brand, colors, people, or media type                          |
 | `cleanup_media_cache`      | Cleans up old cached media files to free disk space                                                 |
@@ -266,6 +283,7 @@ This MCP server provides tools for interacting with LinkedIn Ad Library objects:
 
 **Video Analysis Not Working:**
 - Confirm you have a valid Google Gemini API key in your `.env` file
+- If Gemini says the model is not found, set `GEMINI_MODEL` in `.env` to a current model from [Google's model list](https://ai.google.dev/gemini-api/docs/models)
 - Pass `ad_id` alongside `media_url` so analysis caches per ad — LinkedIn CDN URLs carry expiry parameters that rotate
 
 **MCP Server Connection Issues:**
@@ -279,10 +297,10 @@ For additional Claude Desktop integration troubleshooting, see the [MCP document
 
 ## Tests
 
-The response parsing has a self-check that runs without network access or API keys:
+The tests run without network access or API keys:
 
 ```bash
-python3 test_parsing.py
+for t in test_*.py; do python3 "$t"; done
 ```
 
 ---
